@@ -1,0 +1,695 @@
+// Exemplo de WebOTA 
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <WebServer.h>
+#include <Update.h>
+
+//BIBLIOTECAS PARA O NTP
+#include <TimeLib.h>                                      // PARA TRABALHAR E MANIPULAR A DATA E 
+#include <NTPClient.h>                                    // PARA PEGAR A HORA E TRABALHAR COM SERVIDOR NTP
+#include "time.h"                                         // PARA MANIPULAR O HORARIO INTERNO DO MICRO
+int second_antes;
+int minute_antes;
+
+#include "FastLED.h"
+
+#if FASTLED_VERSION < 3001000
+#error "Necessario FastLED 3.1 or posterior; verifique github para restante do codigo."
+#endif
+
+#define DATA_PIN    15
+//#define CLK_PIN   4
+#define LED_TYPE    WS2812B
+#define COLOR_ORDER GRB
+#define NUM_LEDS    256
+int BRIGHTNESS=  10;  // 255 = total
+
+CRGB leds[NUM_LEDS];
+
+int cor_relogio_azul[3]     = {0,0,255};      // AZUL
+int cor_relogio_turquesa[3] = {0,255,255};    // TURQUESA
+int cor_relogio_vermelho[3] = {255,0,0};      // VERMELHO
+int cor_relogio_purpura[3]  = {255,128,255};  // PURPURA
+int cor_relogio_verde[3]    = {0,255,0};      // VERDE
+int cor_relogio_branco[3]   = {255,255,255};  // BRANCO
+int cor_relogio_apagado[3]  = {0,0,0};        // APAGADO
+
+bool dois_p_on_off = true; // FLAG PARA PISCAR OS DOIS PONTOS DOS SEGUNDOS
+
+int cor_vilager_cabeca[3] = {cor_relogio_purpura[0],cor_relogio_purpura[1],cor_relogio_purpura[2]};
+int cor_vilager_corpo[3] = {cor_relogio_azul[0],cor_relogio_azul[1],cor_relogio_azul[2]};
+int cor_vilager_nariz[3] = {cor_relogio_vermelho[0],cor_relogio_vermelho[1],cor_relogio_vermelho[2]};
+int cor_vilager_olho[3] = {cor_relogio_verde[0],cor_relogio_verde[1],cor_relogio_verde[2]};
+
+int cor_relogio_dois_p[3] = {cor_relogio_turquesa[0], cor_relogio_turquesa[1], cor_relogio_turquesa[2]}; // O MEIO ENTRE AZUL E TURQUESA
+int cor_dig_1[3] =          {cor_relogio_turquesa[0],cor_relogio_turquesa[1],cor_relogio_turquesa[2]};              //
+int cor_dig_2[3] =          {cor_relogio_turquesa[0],cor_relogio_turquesa[1],cor_relogio_turquesa[2]};              //
+int cor_dig_3[3] =          {cor_relogio_turquesa[0],cor_relogio_turquesa[1],cor_relogio_turquesa[2]};        //
+int cor_dig_4[3] =          {cor_relogio_turquesa[0],cor_relogio_turquesa[1],cor_relogio_turquesa[2]};        //
+int cor_rel_redor[3] =      {cor_relogio_apagado[0],cor_relogio_apagado[1],cor_relogio_apagado[2]};        //
+int cor_rel_redor_pont[3] = {cor_relogio_verde[0],cor_relogio_verde[1],cor_relogio_verde[2]};                 //
+
+bool tela_atualizacao_firm = false; //FLAG PARA SABER SE ESTA ATUALIZANDO O FIRM
+bool pisca_dois_pontos = false;     //FLAG PARA VERIFICAR SE DEVE SER PISCADO OS DOIS PONTOS
+bool dois_pontos_ja_ligado = false; //FLAG PARA VERIFICAR SE FICA LIGADO OS DOIS PONTOS E SE JA FOI LIGADO
+
+//Parâmetros da rede WiFi
+const char* ssid = "elitec_testes";
+const char* password = "10503879";
+
+// PARAMETROS PARA O NTP
+const char* ntpServer[] = {"a.st1.ntp.br", "gps.ntp.br", "189.45.192.3", "0.br.pool.ntp.org", "ntp.ufscar.br", "201.49.148.135"}; //200.20 é do ntp br//o 189.45 é da unifique
+String ultimo_evento_ntp[] = {"desconhecido[0]"};
+WiFiUDP ntpUDP;                                           // ACIMA OS SERVERS NTP PARA CAPTURA DA HORA CERTA
+NTPClient ntp(ntpUDP);
+int minutos_para_sincronia_do_ntp =  15;                  // AO CONSEGUIR FAZER O AJUSTE FAZ O AJUSTE DESSA VAR PARA FAZE-LO DE MINUTOS EM MINUTOS SUBSEQUENTES
+int cont_minutos_para_sincronia_do_ntp = 0;               // INICIA COM O INTUITO DE NO PRIMEIRO MINUTO JA FAZER O AJUSTE E CONTINUA A CADA MINUTO, 
+char  estado_NTP= '0';                                    // ESTADO DO NTP 0 SEM ATUALIZAR 1 ATUALIZADO
+
+//Parâmetros de rede
+//IPAddress local_ip(192, 168, 100, 121);
+//IPAddress gateway(192, 168, 100, 1);
+//IPAddress subnet(255, 255, 255, 0);
+const uint32_t PORTA = 8032; //A porta que será utilizada (padrão 80) // AJUSTADO PARA UM PADRAO ELITEC
+
+//Algumas informações que podem ser interessantes
+const uint32_t chipID = (uint32_t)(ESP.getEfuseMac() >> 32); //um ID exclusivo do Chip...
+const String CHIP_ID = "<p> Chip ID: " + String(chipID) + "</p>"; // montado para ser usado no HTML
+const String VERSION = "<p> Versão: 1.0.3333 </p>"; //Exemplo de um controle de versão
+
+//Informações interessantes agrupadas
+const String INFOS = VERSION + CHIP_ID;
+
+//Sinalizador de autorização do OTA
+boolean OTA_AUTORIZADO = false;
+
+//inicia o servidor na porta selecionada
+//aqui testamos na porta 3000, ao invés da 80 padrão
+WebServer server(PORTA);
+
+String rgbToHex(int r, int g, int b) {
+  // Inicia a string com o caractere "#"
+  String hexColor = "#";
+  
+  // Converte cada valor RGB para hexadecimal e adiciona à string
+  hexColor += String(r, HEX);
+  hexColor += String(g, HEX);
+  hexColor += String(b, HEX);
+  
+  // Garante que cada componente RGB tenha 2 caracteres
+  if (r < 16) hexColor = hexColor.substring(0, 1) + "0" + hexColor.substring(1);
+  if (g < 16) hexColor = hexColor.substring(0, 3) + "0" + hexColor.substring(3);
+  if (b < 16) hexColor = hexColor.substring(0, 5) + "0" + hexColor.substring(5);
+  
+  // Retorna o valor hexadecimal completo
+  return hexColor;
+}
+// <input type='color' id='cor' name='cor' value='#64c8ff'> //ESSA LINHA LEMBRA COMO COLOCAR O value PARA PORTAR O VALOR ATUAL JUNTO COM A FUNÇAO ACIMA
+
+//Páginas HTML utilizadas no procedimento OTA
+String cor_dp     = "<p><label>Cor. dos dois ':' pontos.: </label> <input type='color' name='cor_dp' value='" + rgbToHex(cor_relogio_dois_p[0],cor_relogio_dois_p[1],cor_relogio_dois_p[2] ) + "'></p>";
+String cor_br     = "<p><label>Cor da. Borda. do Relogio: </label> <input type='color' name='cor_br' value='" + rgbToHex(cor_rel_redor[0],cor_rel_redor[1],cor_rel_redor[2] ) + "'></p>";
+String cor_pr     = "<p><label>Cor ponteiro dos segundos: </label> <input type='color' name='cor_pr' value='" + rgbToHex(cor_rel_redor_pont[0],cor_rel_redor_pont[1],cor_rel_redor_pont[2] ) + "'></p>";
+String cor_dh     = "<p><label>Cor Digitos da hora atual: </label> <input type='color' name='cor_dh' value='" + rgbToHex(cor_dig_1[0],cor_dig_1[1],cor_dig_1[2] ) + "'></p>"; 
+String cor_dm     = "<p><label>Cor Digit. dos Min. atual: </label> <input type='color' name='cor_dm' value='" + rgbToHex(cor_dig_3[0],cor_dig_3[1],cor_dig_3[2] ) + "'></p>"; 
+String int_brilho = "<p><label>Brilho Geral: </label> <input type='range' name='int_brilho_leds' min='5' max='255' step='5' value='" + String(BRIGHTNESS) + "'>";
+
+String OBS_CORES = "obs: quanto mais perto do 0,0,0 no RGB mais fraca a cor, e mais chance de não aparecer, baseando-se na ideia de que quanto mais perto do preto, menos liga os leds.";
+String botao = "<a href='/configuracao'><button> --- CONFIGURAÇOES --- </button></a>";
+String configuracao = "<!DOCTYPE html><html><head><title>ESP32 webOTA CONFIGURAÇOES</title><meta charset='UTF-8'></head><body><h1>ESP32 webOTA"+INFOS+"</h1><h2>Configuração do sistema escolha as opçoes abaixo:.<p>" +OBS_CORES+ "</p></h2><form method='POST' action='/configuracao 'enctype='multipart/form-data'>" + cor_br + cor_pr + cor_dp + cor_dh + cor_dm + int_brilho +"<input type='submit' value='Ok'></form></body></html>";
+String verifica = "<!DOCTYPE html><html><head><title>ESP32 webOTA</title><meta charset='UTF-8'></head><body><h1>ESP32 webOTA</h1><h2>Digite a chave de verificação.<p>Clique em ok para continuar. . .</p></h2>" + INFOS + "<form method='POST' action='/avalia 'enctype='multipart/form-data'> <p><label>Autorização: </label><input type='text' name='autorizacao'></p><input type='submit' value='Ok'></form> <p> "+botao+" </p> </body></html>";
+String serverIndex = "<!DOCTYPE html><html><head><title>ESP32 webOTA</title><meta charset='UTF-8'></head><body><h1>ESP32 webOTA</h1><h2>Selecione o arquivo para a atualização e clique em atualizar. |||MR__ELITEC__posBUG|||</h2>" + INFOS + "<form method='POST' action='/update' enctype='multipart/form-data'><p><input type='file' name='update'></p><p><input type='submit' value='Atualizar'></p></form></body></html>";
+String Resultado_Ok = "<!DOCTYPE html><html><head><title>ESP32 webOTA</title><meta charset='UTF-8'></head><body><h1>ESP32 webOTA</h1><h2>Atualização bem sucedida!</h2>" + INFOS + "</body></html>";
+String Resultado_Falha = "<!DOCTYPE html><html><head><title>ESP32 webOTA</title><meta charset='UTF-8'></head><body><h1>ESP32 webOTA</h1><h2>Falha durante a atualização. A versão anterior será recarregado.</h2>" + INFOS + "</body></html>";
+String style = "<style>"
+                "input[type=\"submit\"] {"
+                    "padding: 10px 20px;"  // Correto: ponto e vírgula no CSS
+                    "font-size: 16px;"
+                    "background-color: #4CAF50;"
+                    "color: white;"
+                    "border: none;"
+                    "border-radius: 12px;"
+                    "cursor: pointer;"
+                    "transition: background-color 0.3s ease;"
+                "}"
+                "input[type=\"submit\"]:hover {"
+                    "background-color: #45a049;"
+                "}"
+                "</style>";
+
+    void atualiza_cores_html(){
+       cor_dp     = "<p><label>Cor. dos dois ':' pontos.: </label> <input type='color' name='cor_dp' value='" + rgbToHex(cor_relogio_dois_p[0],cor_relogio_dois_p[1],cor_relogio_dois_p[2] ) + "'></p>";
+       cor_br     = "<p><label>Cor da. Borda. do Relogio: </label> <input type='color' name='cor_br' value='" + rgbToHex(cor_rel_redor[0],cor_rel_redor[1],cor_rel_redor[2] ) + "'></p>";
+       cor_pr     = "<p><label>Cor ponteiro dos segundos: </label> <input type='color' name='cor_pr' value='" + rgbToHex(cor_rel_redor_pont[0],cor_rel_redor_pont[1],cor_rel_redor_pont[2] ) + "'></p>";
+       cor_dh     = "<p><label>Cor Digitos da hora atual: </label> <input type='color' name='cor_dh' value='" + rgbToHex(cor_dig_1[0],cor_dig_1[1],cor_dig_1[2] ) + "'></p>"; 
+       cor_dm     = "<p><label>Cor Digit. dos Min. atual: </label> <input type='color' name='cor_dm' value='" + rgbToHex(cor_dig_3[0],cor_dig_3[1],cor_dig_3[2] ) + "'></p>"; 
+       int_brilho = "<p><label>Brilho Geral: </label> <input type='range' name='int_brilho_leds' min='5' max='255' step='5' value='" + String(BRIGHTNESS) + "'></p>";
+
+       OBS_CORES = "obs: quanto mais perto do 0,0,0 no RGB mais fraca a cor, e mais chance de não aparecer, baseando-se na ideia de que quanto mais perto do preto, menos liga os leds.";
+       botao = "<a href='/configuracao'><button> --- CONFIGURAÇOES --- </button></a>";
+       configuracao = "<!DOCTYPE html><html><head><title>ESP32 webOTA CONFIGURAÇOES</title><meta charset='UTF-8'>"+style+"</head><body><h1>ESP32 webOTA"+INFOS+"</h1><h2>Configuração do sistema escolha as opçoes abaixo:.<p>" +OBS_CORES+ "</p></h2><form method='POST' action='/configuracao 'enctype='multipart/form-data'>" + cor_br + cor_pr + cor_dp + cor_dh + cor_dm + int_brilho +"<input type='submit' value='Ok'></form></body></html>";
+       verifica = "<!DOCTYPE html><html><head><title>ESP32 webOTA</title><meta charset='UTF-8'></head><body><h1>ESP32 webOTA</h1><h2>Digite a chave de verificação.<p>Clique em ok para continuar. . .</p></h2>" + INFOS + "<form method='POST' action='/avalia 'enctype='multipart/form-data'> <p><label>Autorização: </label><input type='text' name='autorizacao'></p><input type='submit' value='Ok'></form> <p> "+botao+" </p> </body></html>";
+       serverIndex = "<!DOCTYPE html><html><head><title>ESP32 webOTA</title><meta charset='UTF-8'></head><body><h1>ESP32 webOTA</h1><h2>Selecione o arquivo para a atualização e clique em atualizar. |||MR__ELITEC__posBUG|||</h2>" + INFOS + "<form method='POST' action='/update' enctype='multipart/form-data'><p><input type='file' name='update'></p><p><input type='submit' value='Atualizar'></p></form></body></html>";
+       Resultado_Ok = "<!DOCTYPE html><html><head><title>ESP32 webOTA</title><meta charset='UTF-8'></head><body><h1>ESP32 webOTA</h1><h2>Atualização bem sucedida!</h2>" + INFOS + "</body></html>";
+       Resultado_Falha = "<!DOCTYPE html><html><head><title>ESP32 webOTA</title><meta charset='UTF-8'></head><body><h1>ESP32 webOTA</h1><h2>Falha durante a atualização. A versão anterior será recarregado.</h2>" + INFOS + "</body></html>";
+    }                                                                                                                                                                                                                                                                                                                                                                       
+
+void setup() {  
+  Serial.begin(115200); //Serial para debug
+  Serial.println("Start...3S de delay");
+  //setTime(17, 30, 0, 29, 7, 2024);
+  delay(3000); // 3 second delay for recovery
+  
+  // tell FastLED about the LED strip configuration
+  FastLED.addLeds<LED_TYPE,DATA_PIN,COLOR_ORDER>(leds, NUM_LEDS)
+    .setCorrection(TypicalLEDStrip)
+    .setDither(BRIGHTNESS < 255);
+
+  // set master brightness control
+  FastLED.setBrightness(BRIGHTNESS);
+
+  Serial.println("Start...1S de delay");
+  //COD DA MATRIZ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  delay(1000);          // 1 SEGUNDO DE ESPERA, INSERIDO NO COD ORIGINAL DA MATRIZ, NÃO ESTA CLARA A FUNÇAO ORIGINALMENTE ERAM 3 SEGUNDOS
+  // tell FastLED about the LED strip configuration
+  FastLED.addLeds<LED_TYPE,DATA_PIN,COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+  //FastLED.addLeds<LED_TYPE,DATA_PIN,CLK_PIN,COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+  // set master brightness control
+  FastLED.setBrightness(BRIGHTNESS);
+  //getBrightness
+  //-fim- COD DA MATRIZ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+  Serial.println("Start...+1 Seg de delay");  
+  delay(1000); 
+
+  WiFi.mode(WIFI_AP_STA); //Comfigura o ESP32 como ponto de acesso e estação
+  WiFi.begin(ssid, password);// inicia a conexão com o WiFi
+  // Wait for connection
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.print("Connected to ");
+  Serial.println(ssid);
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  if (WiFi.status() == WL_CONNECTED) //aguarda a conexão
+  {          
+    //atende uma solicitação para a raiz
+    // e devolve a página 'verifica'
+    server.on("/", HTTP_GET, []() 
+    {
+      atualiza_cores_html();
+      server.sendHeader("Connection", "close");
+      server.send(200, "text/html", verifica);
+    });
+
+    //atende uma solicitação para a página avalia
+    server.on("/avalia", HTTP_POST, [] ()
+    {
+      Serial.println("Em server.on /avalia: args= " + String(server.arg("autorizacao"))); //somente para debug
+      tela_atualizacao_firm = false;
+      if (server.arg("autorizacao") != "150901"){ // confere se o dado de autorização atende a avaliação              
+        server.sendHeader("Connection", "close");//se não atende, serve a página indicando uma falha
+        server.send(200, "text/html", Resultado_Falha);
+        //ESP.restart();
+      }else{
+        //se atende, solicita a página de índice do servidor
+        // e sinaliza que o OTA está autorizado
+        OTA_AUTORIZADO = true;
+        tela_atualizacao_firm = true;
+        server.sendHeader("Connection", "close");
+        server.send(200, "text/html", serverIndex);
+      }
+    });
+    server.on("/configuracao", HTTP_GET, [] ()
+    {   
+      // A IDEIA AQUI É ATUALIZAR O HTML COM A SITUAÇÃO ATUAL DO RELOGIO
+      atualiza_cores_html();      
+      server.sendHeader("Connection", "close");
+      server.send(200, "text/html", configuracao);
+    });
+    server.on("/configuracao", HTTP_POST, [] ()
+    {
+      atualiza_cores_html();
+
+      String hex = String(server.arg("cor_br"));
+      int red =   transf_hex_dec(hex[1],hex[2]);// A IDEIA AQUI É PEGAR A palavra hex e transf em dec
+      int green = transf_hex_dec(hex[3],hex[4]);
+      int blue =  transf_hex_dec(hex[5],hex[6]);
+
+      String hex2 = String(server.arg("cor_pr"));
+      int red_pr =   transf_hex_dec(hex2[1],hex2[2]);// A IDEIA AQUI É PEGAR A palavra hex e transf em dec
+      int green_pr = transf_hex_dec(hex2[3],hex2[4]);
+      int blue_pr =  transf_hex_dec(hex2[5],hex2[6]);
+
+      String hex3 = String(server.arg("cor_dp"));
+      int red_dp =   transf_hex_dec(hex3[1],hex3[2]);// A IDEIA AQUI É PEGAR A palavra hex e transf em dec
+      int green_dp = transf_hex_dec(hex3[3],hex3[4]);
+      int blue_dp =  transf_hex_dec(hex3[5],hex3[6]);
+
+      String hex5 = String(server.arg("cor_dh"));
+      int red_dh =   transf_hex_dec(hex5[1],hex5[2]);// A IDEIA AQUI É PEGAR A palavra hex e transf em dec
+      int green_dh = transf_hex_dec(hex5[3],hex5[4]);
+      int blue_dh =  transf_hex_dec(hex5[5],hex5[6]);
+
+      String hex6 = String(server.arg("cor_dm"));
+      int red_dm =   transf_hex_dec(hex6[1],hex6[2]);// A IDEIA AQUI É PEGAR A palavra hex e transf em dec
+      int green_dm = transf_hex_dec(hex6[3],hex6[4]);
+      int blue_dm =  transf_hex_dec(hex6[5],hex6[6]);
+      
+      String hex4 = String(server.arg("int_brilho_leds"));
+      BRIGHTNESS = hex4.toInt();
+
+      if ((BRIGHTNESS >= 5)&&(BRIGHTNESS <= 255)){        
+        FastLED.setBrightness(BRIGHTNESS); //PASSA O QUE VEIO DO SELETOR NA WEB LINHA LOGO ACIMA, PARA INTEIRO, TEM QUE FAZER UMA CHECAGEM AQUI PARA SER DENTRO DE 10 A 255
+        Serial.println("Em server.on /configuracao: args int_brilho_leds= " + String(server.arg("int_brilho_leds"))); //somente para debug
+      }else{
+        Serial.println("ERRO no valor em server.on /configuracao: args int_brilho_leds= " + String(server.arg("int_brilho_leds"))); //somente para debug
+      }      
+
+      //Serial.println("Em server.on /configuracao: args cor_borda4= " + String(server.arg("cor_borda4"))); //somente para debug 
+      //Serial.println("Em server.on /configuracao: RGB= (" + String(red)+","+String(green)+","+String(blue)+")"); //somente para debug                    
+      //if (server.arg("cor_borda") == "0"){ // confere se o dado de autorização atende a avaliação              
+         //retira a borda
+      //}else{
+         cor_rel_redor[0] = red;
+         cor_rel_redor[1] = green;
+         cor_rel_redor[2] = blue;   
+
+         cor_rel_redor_pont[0] = red_pr;
+         cor_rel_redor_pont[1] = green_pr;
+         cor_rel_redor_pont[2] = blue_pr;
+
+         cor_relogio_dois_p[0] = red_dp;
+         cor_relogio_dois_p[1] = green_dp;
+         cor_relogio_dois_p[2] = blue_dp;
+
+         cor_dig_1[0] = red_dm;
+         cor_dig_1[1] = green_dm;   
+         cor_dig_1[2] = blue_dm;   
+           
+         cor_dig_2[0] = red_dm;        
+         cor_dig_2[1] = green_dm;            
+         cor_dig_2[2] = blue_dm;
+      
+         cor_dig_3[0] = red_dh;
+         cor_dig_3[1] = green_dh;   
+         cor_dig_3[2] = blue_dh;   
+           
+         cor_dig_4[0] = red_dh;        
+         cor_dig_4[1] = green_dh;            
+         cor_dig_4[2] = blue_dh;   
+         
+         dois_pontos_ja_ligado = false;
+
+         atualiza_hora_minuto(); //INTUITO AQUI É ATUALIZAR A DATA E HORA DO RELOGIO
+
+      //}
+      //RECARAGA A PAGINA INICIAL
+      server.sendHeader("Connection", "close");
+      server.send(200, "text/html", verifica);
+    });
+
+    //serve a página de indice do servidor
+    //para seleção do arquivo
+    server.on("/serverIndex", HTTP_GET, [](){
+      server.sendHeader("Connection", "close");
+      server.send(200, "text/html", serverIndex);
+      tela_atualizacao_firm = true;
+    });
+
+    //tenta iniciar a atualização . . .
+    server.on("/update", HTTP_POST, []()
+    {
+      //verifica se a autorização é false.
+      //Se for falsa, serve a página de erro e cancela o processo.
+      if (OTA_AUTORIZADO == false){
+        server.sendHeader("Connection", "close");
+        server.send(200, "text/html", Resultado_Falha);
+        tela_atualizacao_firm = false;
+        return;
+      }
+      //Serve uma página final que depende do resultado da atualização
+      server.sendHeader("Connection", "close");
+      server.send(200, "text/html", (Update.hasError()) ? Resultado_Falha : Resultado_Ok);
+      delay(1000);
+      ESP.restart();
+    }, []()
+    {
+      //Mas estiver autorizado, inicia a atualização
+      HTTPUpload& upload = server.upload();
+      if (upload.status == UPLOAD_FILE_START)
+      {
+        Serial.setDebugOutput(true);
+        Serial.printf("Atualizando: %s\n", upload.filename.c_str());
+        if (!Update.begin()){
+          //se a atualização não iniciar, envia para serial mensagem de erro.
+          Update.printError(Serial);
+        }
+      }
+      else if (upload.status == UPLOAD_FILE_WRITE){
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize)
+        {
+          //se não conseguiu escrever o arquivo, envia erro para serial
+          Update.printError(Serial);
+        }
+      }
+      else if (upload.status == UPLOAD_FILE_END){
+        if (Update.end(true))
+        {
+          //se finalizou a atualização, envia mensagem para a serial informando
+          Serial.printf("Atualização bem sucedida! %u\nReiniciando...\n", upload.totalSize);
+        }
+        else
+        {
+          //se não finalizou a atualização, envia o erro para a serial.
+          Update.printError(Serial);
+        }
+        Serial.setDebugOutput(false);
+      }
+      else
+      {
+        //se não conseguiu identificar a falha no processo, envia uma mensagem para a serial
+        Serial.printf("Atualização falhou inesperadamente! (possivelmente a conexão foi perdida.): status=%d\n", upload.status);
+      }
+    });
+
+    server.begin(); //inicia o servidor
+
+    Serial.println(INFOS); //envia as informações armazenadas em INFOS, para debug
+
+    //Envia ara a serial o IP atual do ESP
+    Serial.print("Servidor em: ");
+    Serial.println( WiFi.localIP().toString() + ":" + PORTA);
+  }
+  else
+  {
+    //avisa se não onseguir conectar no WiFi
+    Serial.println("Falha ao conectar ao WiFi.");
+  }
+  ativa_leds_circ();
+}
+
+void loop() {  
+  //manipula clientes conectados para atualizaçao
+  //atualiza_cores_html();
+  server.handleClient();
+  delay(1);//somente um instante
+
+  if (tela_atualizacao_firm == true){
+    vilager();
+  }else{
+    tempos();
+  } 
+  FastLED.show();  
+}
+
+
+void blink(){    
+  // Turn the LED on, then pause
+  FastLED.clear();
+  for( uint16_t i = 96 ; i < 160; i++) {
+    leds[i] = CRGB::Red;
+    FastLED.show();
+    delayMicroseconds(1);
+    // Now turn the LED off, then pause
+    leds[i] = CRGB::Black;
+    FastLED.show();
+    //delayMicroseconds(1);
+  }
+}
+
+void pride() {                     // This function draws rainbows with an ever-changing,
+  static uint16_t sPseudotime = 0; // widely-varying set of parameters.
+  static uint16_t sLastMillis = 0;
+  static uint16_t sHue16 = 0;
+ 
+  uint8_t sat8 = beatsin88( 87, 220, 250);
+  uint8_t brightdepth = beatsin88( 341, 96, 224);
+  uint16_t brightnessthetainc16 = beatsin88( 203, (25 * 256), (40 * 256));
+  uint8_t msmultiplier = beatsin88(147, 23, 60);
+
+  uint16_t hue16 = sHue16;//gHue * 256;
+  uint16_t hueinc16 = beatsin88(113, 1, 3000);
+  
+  uint16_t ms = millis();
+  uint16_t deltams = ms - sLastMillis ;
+  sLastMillis  = ms;
+  sPseudotime += deltams * msmultiplier;
+  sHue16 += deltams * beatsin88( 400, 5,9);
+  uint16_t brightnesstheta16 = sPseudotime;
+  
+  for( uint16_t i = 0 ; i < NUM_LEDS; i++) {
+    hue16 += hueinc16;
+    uint8_t hue8 = hue16 / 256;
+
+    brightnesstheta16  += brightnessthetainc16;
+    uint16_t b16 = sin16( brightnesstheta16  ) + 32768;
+
+    uint16_t bri16 = (uint32_t)((uint32_t)b16 * (uint32_t)b16) / 65536;
+    uint8_t bri8 = (uint32_t)(((uint32_t)bri16) * brightdepth) / 65536;
+    bri8 += (255 - brightdepth);
+    
+    CRGB newcolor = CHSV( hue8, sat8, bri8);
+    
+    uint16_t pixelnumber = i;
+    pixelnumber = (NUM_LEDS-1) - pixelnumber;
+    
+    nblend( leds[pixelnumber], newcolor, 64);
+  }
+}
+void vilager() {  
+  apag_dig_um();
+  apag_dig_dois();
+  apag_dig_tres();
+  apag_dig_quatro();
+
+  leds[65] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[94] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[97] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[126] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[129] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[158] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[66] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[67] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[68] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[69] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[70] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[157] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[156] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[155] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[154] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[153] = CRGB(cor_vilager_cabeca[0],cor_vilager_cabeca[1],cor_vilager_cabeca[2]);
+  leds[122] = CRGB(cor_vilager_nariz[0],cor_vilager_nariz[1],cor_vilager_nariz[2]);
+  leds[121] = CRGB(cor_vilager_nariz[0],cor_vilager_nariz[1],cor_vilager_nariz[2]);
+  leds[100] = CRGB(cor_vilager_olho[0],cor_vilager_olho[1],cor_vilager_olho[2]);
+  leds[132] = CRGB(cor_vilager_olho[0],cor_vilager_olho[1],cor_vilager_olho[2]);
+
+
+  FastLED.show();
+}
+
+void tempos() {      
+            //////////////////////// EXECUÇAO A CADA MINUTO ////////////////////////////////////////////////////////////////////////////////  
+            if (minute() != minute_antes) {                              
+              minute_antes = minute();                       
+              verifica_ntp();
+              atualiza_hora_minuto();                                                   
+            }
+            //////////////////////// EXECUÇAO A CADA MINUTO /////////////////////////////////////////////////////////////////////////////////
+                                  //////////////////////// EXECUÇAO A CADA SEGUNDO ///////////////////////////////////////////////////////////////////
+                                  if (second() != second_antes) {            // VERIFICA SE PASSOU O SEGUNDO PARA NOVA EXECUÇÃO DO COD.
+                                    second_antes = second();
+                                    //digitalWrite(cpu, !digitalRead(cpu));  // PARA PISCAR A cpu A CADA UM SEGUNDO                                                                                        
+                                    Serial.print("ESP: ");
+                                    Serial.println(String(hour())+":"+String(minute())+":"+String(second())); 
+                                      if ((millis() >= 5000)&&(millis() <=   8000)){ verifica_ntp(); atualiza_hora_minuto(); } //FAZ A ATUALIZAÇÃO NO SISTEMA AINDA NOS PRIMEIROS INSTANTES
+                                          if (pisca_dois_pontos){
+                                              if (dois_p_on_off){
+                                                leds[195] = CRGB(cor_relogio_dois_p[0],cor_relogio_dois_p[1],cor_relogio_dois_p[2]);
+                                                leds[197] = CRGB(cor_relogio_dois_p[0],cor_relogio_dois_p[1],cor_relogio_dois_p[2]);
+                                                dois_p_on_off = false;
+                                              }else{
+                                                leds[195] = CRGB::Black; //DESLIGA OS PIXELS DA MATRIZ
+                                                leds[197] = CRGB::Black;
+                                                dois_p_on_off = true;
+                                              } 
+                                              FastLED.show();
+                                          }else{
+                                            if (dois_pontos_ja_ligado == false){
+                                              leds[195] = CRGB(cor_relogio_dois_p[0],cor_relogio_dois_p[1],cor_relogio_dois_p[2]);
+                                              leds[197] = CRGB(cor_relogio_dois_p[0],cor_relogio_dois_p[1],cor_relogio_dois_p[2]);
+                                              FastLED.show();
+                                              dois_pontos_ja_ligado = true;
+                                            }                                            
+                                          }
+                                          passa_segund_circ();
+                                  } // FIM EXECUÇAO A CADA SEGUNDO
+                                  //////////////////////// EXECUÇAO A CADA SEGUNDO ///////////////////////////////////////////////////////////////////
+}
+void atualiza_hora_minuto(){                  
+                                    //digitalWrite(cpu, !digitalRead(cpu));  // PARA PISCAR A cpu A CADA UM SEGUNDO                                                                                        
+                                      Serial.print("ESP: ");
+                                      Serial.println(String(hour())+":"+String(minute())+":"+String(second()));
+
+                                      if ((hour() >= 10)&&(hour() <= 19)){
+                                        um_1(true);                                        
+                                      }else{
+                                        if (hour() >= 20){
+                                          um_2(true);                                          
+                                        }else{
+                                          um_0(true);  
+                                        }
+                                      }
+                                      if (hour() <= 9){
+                                          switch (hour()) {
+                                          case 9:
+                                            dois_9(true);
+                                            break;
+                                          case 8:
+                                            dois_8(true);
+                                            break;
+                                          case 7:
+                                            dois_7(true);
+                                            break;
+                                          case 6:
+                                            dois_6(true);
+                                            break;
+                                          case 5:
+                                            dois_5(true);
+                                            break;
+                                          case 4:
+                                            dois_4(true);
+                                            break;
+                                          case 3:
+                                            dois_3(true);
+                                            break;
+                                          case 2:
+                                            dois_2(true);
+                                            break;
+                                          case 1:
+                                            dois_1(true);
+                                            break;             
+                                          default:
+                                            dois_0(true);
+                                            break;
+                                          }
+                                      }else{
+                                        String seg_d_h = String(hour());
+                                        seg_d_h = seg_d_h[1];
+                                        if (seg_d_h == "9") {                                         
+                                          dois_9(true);
+                                        }else{
+                                          if (seg_d_h == "8") {                                         
+                                            dois_8(true);
+                                          }else{
+                                            if (seg_d_h == "7") {                                         
+                                              dois_7(true);
+                                            }else{
+                                              if (seg_d_h == "6") {                                         
+                                                dois_6(true);
+                                              }else{
+                                                if (seg_d_h == "5") {                                         
+                                                  dois_5(true);
+                                                }else{
+                                                  if (seg_d_h == "4") {                                         
+                                                    dois_4(true);
+                                                  }else{
+                                                    if (seg_d_h == "3") {                                         
+                                                      dois_3(true);
+                                                    }else{
+                                                      if (seg_d_h == "2") {                                         
+                                                        dois_2(true);
+                                                      }else{
+                                                        if (seg_d_h == "1") {                                         
+                                                          dois_1(true);
+                                                        }else{
+                                                          if (seg_d_h == "0") {                                         
+                                                            dois_0(true);
+                                                          }
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                }
+                                              }
+                                            }
+                                          }
+                                        }
+                                            
+                                      }
+                                      if (minute() == 0){
+                                        tres_0(true);
+                                        quatro_0(true);
+                                      }else{
+                                        if (minute() == 1){
+                                          tres_0(true);
+                                          quatro_1(true);
+                                        }else{
+                                          if (minute() == 2){
+                                            tres_0(true);
+                                            quatro_2(true);
+                                          }else{
+                                            if (minute() == 3){
+                                              tres_0(true);
+                                              quatro_3(true);
+                                            }else{
+                                              if (minute() == 4){
+                                                tres_0(true);
+                                                quatro_4(true);
+                                              }else{
+                                                if (minute() == 5){
+                                                  tres_0(true);
+                                                  quatro_5(true);
+                                                }else{
+                                                  if (minute() == 6){
+                                                    tres_0(true);
+                                                    quatro_6(true);
+                                                  }else{
+                                                    if (minute() == 7){
+                                                      tres_0(true);
+                                                      quatro_7(true);
+                                                    }else{
+                                                      if (minute() == 8){
+                                                        tres_0(true);
+                                                        quatro_8(true);
+                                                      }else{
+                                                        if (minute() == 9){
+                                                          tres_0(true);
+                                                          quatro_9(true);
+                                                        }else{
+                                                          if (minute() == 10){
+                                                            tres_1(true);
+                                                            quatro_0(true);
+                                                          }else{
+                                                            if (minute() == 11){
+                                                              tres_1(true);
+                                                              quatro_1(true);
+                                                            }else{
+                                                              if (minute() == 12){
+                                                                tres_1(true);
+                                                                quatro_2(true);
+                                                              }else{
+                                                                if (minute() == 13){
+                                                                  tres_1(true);
+                                                                  quatro_3(true);
+                                                                }else{
+                                                                  if (minute() == 14){
+                                                                    tres_1(true);
+                                                                    quatro_4(true);
+                                                                  }else{
+                                                                    if (minute() == 15){
+                                                                      tres_1(true);
+                                                                      quatro_5(true);
+                                                                    }else{
+                                                                      if (minute() == 16){
+                                                                        tres_1(true);
+                                                                        quatro_6(true);
+                                                                      }else{
+                                                                        if (minute() == 17){
+                                                                          tres_1(true);
+                                                                          quatro_7(true);
+                                                                        }else{
